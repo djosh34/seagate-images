@@ -1,0 +1,27 @@
+# Fedora 44, linux/amd64.
+FROM registry.fedoraproject.org/fedora:44@sha256:474e0ab5a1e59c215e59f281b1fe49f2866ec20f773533f5cca851cc830c5c2b AS download
+RUN dnf -y install --setopt=install_weak_deps=False bzip2 unzip && dnf clean all
+WORKDIR /download
+ARG RESTIC=0.19.1
+ARG RESTIC_SHA256=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+ARG RCLONE=1.75.2
+ARG RCLONE_SHA256=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+RUN curl -fsSLo restic.bz2 https://github.com/restic/restic/releases/download/v${RESTIC}/restic_${RESTIC}_linux_amd64.bz2 \
+ && echo "${RESTIC_SHA256}  restic.bz2" | sha256sum -c \
+ && bunzip2 restic.bz2 && chmod 755 restic \
+ && curl -fsSLo rclone.zip https://github.com/rclone/rclone/releases/download/v${RCLONE}/rclone-v${RCLONE}-linux-amd64.zip \
+ && echo "${RCLONE_SHA256}  rclone.zip" | sha256sum -c \
+ && unzip -j rclone.zip rclone-v${RCLONE}-linux-amd64/rclone && chmod 755 rclone
+
+# golang:1.27.3, linux/amd64.
+FROM docker.io/library/golang:1.27.3@sha256:5bbe76a31abbe0f1449d7820e550131c020b097c24d3bcfc5ad1231779982c1c AS build
+WORKDIR /src
+COPY go.mod ./
+COPY seagate ./seagate
+RUN CGO_ENABLED=0 go build -trimpath -o /seagate ./seagate
+
+FROM scratch
+COPY --from=download /download/restic /download/rclone /
+COPY --from=build /seagate /
+USER 2000:2000
+ENTRYPOINT ["/seagate"]
