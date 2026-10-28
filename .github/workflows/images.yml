@@ -1,0 +1,62 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install btrfs-progs and smbclient
+        run: sudo apt-get update && sudo apt-get install -y btrfs-progs smbclient
+
+      - name: Unit tests
+        run: go vet ./... && go test -v ./...
+
+      - name: Snapshot test on a real btrfs
+        run: |
+          truncate -s 1G "$RUNNER_TEMP/btrfs.img"
+          mkfs.btrfs "$RUNNER_TEMP/btrfs.img"
+          mkdir "$RUNNER_TEMP/btrfs"
+          sudo mount -o loop "$RUNNER_TEMP/btrfs.img" "$RUNNER_TEMP/btrfs"
+          sudo btrfs subvolume create "$RUNNER_TEMP/btrfs/subvolume"
+          sudo mkdir "$RUNNER_TEMP/btrfs/snapshots"
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/btrfs/subvolume" "$RUNNER_TEMP/btrfs/snapshots"
+          SEAGATE_BTRFS_DIR="$RUNNER_TEMP/btrfs" go test -v -run TestBtrfsSnapshot ./seagate
+
+      - name: Build
+        run: |
+          docker build --platform linux/amd64 -f samba/Containerfile -t seagate-samba samba
+          docker build --platform linux/amd64 -f tools/Containerfile -t seagate-tools .
+
+      - name: No shell in the images
+        run: |
+          test/no-shell.sh seagate-samba
+          test/no-shell.sh seagate-tools
+
+      - name: Samba login test
+        run: test/samba.sh seagate-samba seagate-tools
+
+      - name: Push
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for image in seagate-samba seagate-tools; do
+            for tag in latest "$GITHUB_SHA"; do
+              docker tag "$image" "ghcr.io/djosh34/$image:$tag"
+              docker push "ghcr.io/djosh34/$image:$tag"
+            done
+          done
